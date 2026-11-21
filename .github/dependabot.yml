@@ -1,0 +1,53 @@
+version: 2
+
+# Aylık toplu PR'lar (aktif olmayan repo). cooldown, bir haftadan yeni sürümleri atlar:
+# ele geçirilmiş bir sürümün geri çekilmesine zaman tanır. Security updates bundan
+# etkilenmez.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope # "ci(deps): ..."
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # pnpm workspace: tek lockfile kökte; backend/ ve frontend/ buradan güncellenir.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope # "chore(deps): ...", "chore(deps-dev): ..."
+    groups:
+      npm:
+        patterns: ["*"]
+    ignore:
+      # Majors need code changes; take them by hand. Security updates still open PRs.
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: docker
+    directories: [/backend, /frontend]
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope # "build(deps): ..."
+    groups:
+      docker:
+        patterns: ["*"]
+    ignore:
+      # Majors (Node, nginx) need code changes; take them by hand. Security updates still open PRs.
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]

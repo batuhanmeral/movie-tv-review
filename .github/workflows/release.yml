@@ -1,0 +1,198 @@
+name: Release images
+
+# Yalnızca v* tag'i yayın yapar; tag atılana kadar bu workflow hiç çalışmaz.
+# PR'lardaki imaj derleme ve Trivy taraması security.yml'deki "images" job'ındadır.
+on:
+  push:
+    tags: ['v*']
+
+# Her job ihtiyacı olan izni kendisi alır.
+permissions: {}
+
+# Yayınlar iptal edilmez: yarım kalan bir çalışma imzasız bir digest bırakır.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  PLATFORM: linux/amd64
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # origin/main ile karşılaştırmak için
+          persist-credentials: false
+      - name: Require the tagged commit to be on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+  # CI ve Security kapıları tam bu commit için yeniden çalışır; bu workflow'lar
+  # tag push'unda kendiliğinden tetiklenmez.
+  ci:
+    name: ci
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  security:
+    name: security
+    needs: validate
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      security-events: write # çağrılan workflow'daki sast-upload (Semgrep SARIF)
+
+  # 1. yerel derleme + Trivy kapısı (push ÖNCESİ)
+  # 2. etiketsiz, yalnızca digest ile push (provenance + SBOM)
+  # 3. push edilen digest'in Trivy ile yeniden taranması (taranan = yayınlanan)
+  # 4. etiketlerin bu digest'e bağlanması
+  # 5. cosign keyless imza (digest)
+  publish:
+    name: publish (${{ matrix.component }})
+    needs: [ci, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Environment kuralları (yalnızca v* tag'leri, isteğe bağlı onaylayıcı) GitHub
+    # ayarlarından tanımlanır.
+    environment: release
+    permissions:
+      contents: read # checkout
+      packages: write # GHCR'a push (yalnızca bu job)
+      id-token: write # cosign keyless (Sigstore OIDC) imzası (yalnızca bu job)
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compute image name
+        id: image
+        env:
+          OWNER: ${{ github.repository_owner }}
+          COMPONENT: ${{ matrix.component }}
+        run: echo "name=ghcr.io/${OWNER,,}/movie-tv-review-${COMPONENT}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ${{ steps.image.outputs.name }}
+          # "latest" bilinçli olarak yok; tüketiciler sürüm etiketi ya da digest kullanır.
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.component }}/Dockerfile
+          platforms: ${{ env.PLATFORM }}
+          load: true
+          push: false
+          provenance: false
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: scan/${{ matrix.component }}:${{ github.sha }}
+
+      - name: Trivy gate before push (fail on fixable HIGH/CRITICAL)
+        env:
+          IMAGE: scan/${{ matrix.component }}:${{ github.sha }}
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" \
+            image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --format table "$IMAGE"
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Etiketsiz push: kapılar geçilmeden hiçbir etiket bu imajı göstermez. Aynı
+      # builder kullanıldığı için katmanlar taranan imajla aynıdır; bu varsayım bir
+      # sonraki adımda yine de doğrulanır.
+      - name: Push by digest (provenance + SBOM)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.component }}/Dockerfile
+          platforms: ${{ env.PLATFORM }}
+          provenance: mode=max
+          sbom: true
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Trivy gate on pushed digest
+        env:
+          REF: ${{ steps.image.outputs.name }}@${{ steps.push.outputs.digest }}
+        run: |
+          docker run --rm -v "$HOME/.docker/config.json:/root/.docker/config.json:ro" "$TRIVY_IMAGE" \
+            image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --format table "$REF"
+
+      - name: Tag pushed digest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(-t "$tag")
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          # Etiketlerin gerçekten taranan/imzalanacak digest'i gösterdiğini doğrula
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            got=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$tag points to $got, expected $DIGEST"
+              exit 1
+            fi
+          done <<< "$TAGS"
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Sign image (cosign keyless)
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        # Etiket değil digest imzalanır; imza Rekor şeffaflık kaydına yazılır.
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          repo_re=$(printf '%s' "$GITHUB_REPOSITORY" | sed 's/[.]/\\./g')
+          {
+            echo "### ${COMPONENT}"
+            echo ""
+            echo "\`${IMAGE}@${DIGEST}\`"
+            echo ""
+            echo "Doğrulama (yalnızca v* tag'inden imzalanan imajlar kabul edilir):"
+            echo '```'
+            echo "cosign verify ${IMAGE}@${DIGEST} \\"
+            echo "  --certificate-identity-regexp '^https://github\\.com/${repo_re}/\\.github/workflows/release\\.yml@refs/tags/v[0-9].*\$' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  --certificate-github-workflow-trigger push"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

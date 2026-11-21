@@ -1,0 +1,45 @@
+# Build context = repo kökü (pnpm workspace + lockfile). Yalnızca imaja girmesi
+# gerekenler kalsın; secret ve yerel artıklar bağlama hiç gönderilmesin.
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+.pnpm-store
+
+# Ortam dosyaları ve secret'lar
+**/.env
+**/.env.*
+!**/.env.example
+
+# VCS, CI, editör ve dokümanlar
+.git
+.github
+.docs
+.claude
+.vscode
+.idea
+docs
+**/*.md
+!README.md
+
+# Yerel çalışma artıkları
+backend/uploads
+docker-data
+**/*.log
+**/.DS_Store
+docker-compose.yml
+**/Dockerfile
+.dockerignore
+
+# tsc emit artıkları (.gitignore ile aynı): yerel derlemede eski .js config/kaynak
+# dosyalarının .ts yerine seçilmesini önler
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/src/**/*.js
+frontend/src/**/*.d.ts
+
+# Savunma amaçlı: kimlik bilgisi / yerel veri dosyaları
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.db
