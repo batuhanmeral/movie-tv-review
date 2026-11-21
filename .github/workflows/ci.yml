@@ -4,14 +4,33 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  # release.yml aynı kapıları tag'lenen commit için çağırır.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Yalnızca PR'larda eski çalışma iptal edilir. PR dışında grup commit SHA'sıdır:
+# main'e art arda gelen push'ların hiçbiri iptal edilmez ya da atlanmaz. Önek, release.yml
+# çağırdığında (github.workflow o zaman çağıranın adıdır) grubu benzersiz tutar.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Testler Prisma'yı mock'lar; Postgres/Redis servis container'ı gerekmez.
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # pnpm sürümü kök package.json'daki "packageManager" alanından okunur.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm

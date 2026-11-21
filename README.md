@@ -93,8 +93,37 @@ pnpm lint                            # ESLint
 pnpm --filter ./backend typecheck    # TypeScript
 ```
 
-GitHub Actions runs lint, typecheck, tests and the build on every push to `main`
-and on every pull request.
+## CI/CD & Security
+
+GitHub Actions workflows (every action pinned to a full commit SHA, every
+scanner image to a digest, least-privilege `GITHUB_TOKEN` permissions):
+
+| Workflow | Runs on | What it does |
+|----------|---------|--------------|
+| `ci.yml` | PRs, pushes to `main` | Lint, backend typecheck, tests, build |
+| `security.yml` | PRs, `main`, monthly | Semgrep + zizmor, gitleaks, Trivy (lockfile, Dockerfiles, images), dependency review, ZAP baseline against the backend API, CycloneDX SBOM |
+| `scorecard.yml` | `main`, monthly | OpenSSF Scorecard |
+| `release.yml` | `v*` tags only | Builds backend/frontend images, Trivy gate, pushes to GHCR with provenance + SBOM, cosign keyless signing |
+
+CodeQL runs through GitHub's default setup. Dependabot keeps actions, npm
+packages (minor/patch) and Docker base images up to date. No deployment is
+performed.
+
+Container images (build context is the repo root; both run as non-root):
+
+```bash
+docker build -f backend/Dockerfile  -t movie-tv-review-backend .   # distroless Node, port 4000
+docker build -f frontend/Dockerfile -t movie-tv-review-frontend .  # nginx-unprivileged, port 8080
+```
+
+The frontend image serves static files only; route `/api` and `/uploads` to the
+backend with a reverse proxy, or build it with an absolute `VITE_API_URL`.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md) (GitHub Private
+Vulnerability Reporting).
+
+Pipeline details and local commands are documented in `.docs/ci-cd.md` (project
+docs are kept locally under `.docs/` and written in Turkish).
 
 ## Screenshots
 

@@ -1,0 +1,8 @@
+10020	FAIL	(Anti-clickjacking Header missing - helmet sets X-Frame-Options)
+10021	FAIL	(X-Content-Type-Options Header Missing - helmet sets nosniff)
+10023	FAIL	(Information Disclosure - Debug Error Messages)
+10036	FAIL	(Server Leaks Version Information via Server header)
+10037	FAIL	(Server Leaks Information via X-Powered-By - helmet removes it)
+10038	FAIL	(Content Security Policy Header Not Set - helmet sets a default CSP)
+10098	FAIL	(Cross-Domain Misconfiguration - CORS must not be wildcard)
+90022	FAIL	(Application Error Disclosure - stack traces must not leak in production)
